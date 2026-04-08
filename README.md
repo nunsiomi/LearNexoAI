@@ -101,56 +101,82 @@ Utility scripts package. Each script is a `.ts` file in `src/` with a correspond
 
 **Location:** `learnexo_content_engine/`
 
-A standalone Python (FastAPI) AI microservice for generating personalized learning content for Nigerian secondary school students. Built for the LearNEXO platform.
+A standalone Python (FastAPI) AI microservice for generating personalised learning content for Nigerian secondary school students (JSS1–SS3). Built for the LearNEXO platform.
 
 ### Purpose
 Takes a student's already-determined learning style and generates:
+- **Stage 1:** `assessment.py` — identifies learning style (visual / auditory / kinesthetic) from student activity data
 - **Stage 2:** A full Nigerian-curriculum-aligned learning path (topics, durations, content formats, WAEC/NECO/JAMB exam tips)
-- **Stage 3:** Tailored lesson content for each topic, with format matching the student's learning style
+- **Stage 3:** Tailored lesson content for each topic, with format matching the student's learning style. Visual learners also receive live YouTube video recommendations.
 
 ### Stack
 - **Language:** Python 3.11
 - **Framework:** FastAPI + Uvicorn
 - **AI:** LangChain + Groq (llama-3.3-70b-versatile)
 - **Validation:** Pydantic v2
+- **YouTube:** YouTube Data API v3 (google-api-python-client)
 - **Port:** 8000
 
 ### Files
 ```
 learnexo_content_engine/
-├── api.py                    # FastAPI app — 3 REST endpoints
-├── models.py                 # Pydantic input/output schemas
-├── prompts.py                # LangChain prompt templates (one per learning style)
-├── llm_config.py             # Groq LLM configuration
-├── learning_path_generator.py # Stage 2: learning path generation
-├── content_generator.py      # Stage 3: content generation per style
-├── example_usage.py          # Interactive demo (run directly)
-├── requirements.txt          # Python dependencies
-├── .env                      # GROQ_API_KEY (not committed)
-└── .env.example              # Template for backend engineers
+├── main.py                        # FastAPI entry point — registers all routers
+├── assessment.py                  # Stage 1: learning style detector (standalone script)
+├── app/
+│   └── routes/
+│       ├── learning_path.py       # POST /learning-path (Stage 2)
+│       ├── content.py             # POST /content (Stage 3)
+│       ├── pipeline.py            # POST /full-pipeline (Stages 2+3)
+│       └── videos.py              # POST /videos (YouTube recommendations)
+├── models.py                      # All Pydantic request/response schemas
+├── prompts.py                     # LangChain prompt templates per learning style
+├── llm_config.py                  # Groq LLM configuration
+├── learning_path_generator.py     # Stage 2 business logic
+├── content_generator.py           # Stage 3 logic + YouTube auto-attachment for visual learners
+├── youtube_recommender.py         # YouTube Data API v3 search, filter, and ranking
+├── example_usage.py               # Interactive demo (run directly)
+├── requirements.txt               # Python dependencies
+├── .env                           # Secret keys — NOT committed to git
+├── .env.example                   # Template for backend engineers
+└── .gitignore                     # Blocks .env, __pycache__, *.pyc
 ```
 
 ### API Endpoints
-- `GET  /health`        → Service health check
-- `POST /learning-path` → Stage 2: generate a learning path
-- `POST /content`       → Stage 3: generate lesson content for a topic
-- `POST /full-pipeline` → Stages 2+3 combined (learning path + first topic content)
+- `GET  /health`         → Service health check
+- `POST /learning-path`  → Stage 2: generate a full learning path
+- `POST /content`        → Stage 3: generate lesson content for a topic
+- `POST /full-pipeline`  → Stages 2+3 combined (learning path + first topic content)
+- `POST /videos`         → YouTube video recommendations for any topic (requires YOUTUBE_API_KEY)
 
 ### Learning Styles Supported
 | Style | Content Format |
 |---|---|
-| **Visual** | Concept maps, diagram descriptions, infographics, colour-coded notes, Nigerian visual examples |
+| **Visual** | Concept maps, diagram descriptions, infographics, colour-coded notes, Nigerian visual examples, **YouTube videos (live from YouTube API)** |
 | **Auditory** | Full narration scripts, mnemonics, storytelling narratives, discussion questions, podcast-style Q&A |
 | **Kinesthetic** | Hands-on activities, experiments with everyday items, group tasks, real-world Nigerian applications |
+
+### YouTube Video Integration
+Visual learners automatically receive YouTube video recommendations attached to every `/content` response. The recommender:
+- Searches YouTube using `[Topic] [Subject] [Level] Nigeria WAEC tutorial`
+- Prioritises Nigerian/African educational channels
+- Falls back to globally trusted channels (Khan Academy, CrashCourse, TED-Ed)
+- Filters out music, vlogs, and irrelevant content
+- Returns: title, channel, URL, thumbnail, duration, view count, why recommended
+
+If `YOUTUBE_API_KEY` is not set: `/videos` returns `503`; visual content still generates but `youtube_videos` field is `null`.
 
 ### Run locally
 ```bash
 cd learnexo_content_engine
 pip install -r requirements.txt
-# Add GROQ_API_KEY to .env
-uvicorn api:app --reload --port 8000
-# Docs: http://localhost:8000/docs
+cp .env.example .env
+# Edit .env — add GROQ_API_KEY and YOUTUBE_API_KEY
+uvicorn main:app --reload --port 8000
+# Interactive docs: http://localhost:8000/docs
 ```
 
 ### Environment Variables
-- `GROQ_API_KEY` — required. Get from https://console.groq.com
+| Variable | Required | Purpose | Source |
+|---|---|---|---|
+| `GROQ_API_KEY` | Yes | Powers all AI content generation | https://console.groq.com (free tier) |
+| `YOUTUBE_API_KEY` | For `/videos` & visual learner YouTube | Fetches and ranks YouTube educational videos | https://console.cloud.google.com → YouTube Data API v3 → Credentials |

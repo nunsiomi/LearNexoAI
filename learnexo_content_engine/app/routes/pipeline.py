@@ -1,62 +1,89 @@
-import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from models import (
-    LearningPathRequest,
-    ContentRequest,
-    FullPipelineRequest,
-    FullPipelineResponse,
-)
-from learning_path_generator import generate_learning_path
-from content_generator import generate_content
+from app.schemas.pipeline import GenerateLearningRequest, GenerateLearningResponse
+from app.schemas.learning_style import LearningStyleEvaluation
+from app.services.learning_style_service import LearningStyleService
+from app.services.learning_path_service import LearningPathService
+from app.services.content_service import ContentService
+from app.core.dependencies import get_learning_style_service
 
-router = APIRouter(
-    prefix="/full-pipeline",
-    tags=["Full Pipeline"],
-)
+router = APIRouter(prefix="/api", tags=["Pipeline"])
+
+
+def get_learning_path_service() -> LearningPathService:
+    return LearningPathService()
+
+
+def get_content_service() -> ContentService:
+    return ContentService()
 
 
 @router.post(
-    "",
-    response_model=FullPipelineResponse,
-    summary="Run Stages 2 + 3 together",
+    "/generate-learning/",
+    response_model=GenerateLearningResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Run Stages 1 + 2 + 3 together",
     description=(
-        "Convenience endpoint that runs the learning path generator and — optionally — "
-        "also generates full lesson content for the first topic in the path. "
-        "Use this for student onboarding where you need both a roadmap and immediate lesson content."
+        "Detects the student's learning style, generates a personalized curriculum, "
+        "and optionally generates lesson content for the first topic in the curriculum."
     ),
 )
-def full_pipeline_endpoint(request: FullPipelineRequest) -> FullPipelineResponse:
+def generate_learning(
+    payload: GenerateLearningRequest,
+    stage1: LearningStyleService = Depends(get_learning_style_service),
+    stage2: LearningPathService = Depends(get_learning_path_service),
+    stage3: ContentService = Depends(get_content_service),
+) -> GenerateLearningResponse:
     try:
-        path_request = LearningPathRequest(
-            learning_style=request.learning_style,
-            subject=request.subject,
-            class_level=request.class_level,
-            student_id=request.student_id,
-            term=request.term,
-        )
-        learning_path = generate_learning_path(path_request)
+        # Stage 1: Detect learning style
+        stage1_result: LearningStyleEvaluation = stage1.evaluate(payload.student_activity)
 
-        first_topic_content = None
-        if request.generate_content_for_first_topic and learning_path.topics:
-            first_topic = learning_path.topics[0]
-            content_request = ContentRequest(
-                learning_style=request.learning_style,
-                topic=first_topic.topic,
-                subject=request.subject,
-                class_level=request.class_level,
-                content_depth="introduction",
-                student_id=request.student_id,
-            )
-            first_topic_content = generate_content(content_request)
-
-        return FullPipelineResponse(
-            learning_path=learning_path,
-            first_topic_content=first_topic_content,
+        # Stage 2: Generate curriculum / learning path
+        curriculum = stage2.generate(
+            learning_style=stage1_result.learning_style,
+            subject=payload.subject,
+            class_level=payload.class_level,
+            student_id=payload.student_id,
+            term=payload.term,
         )
 
-    except Exception as e:
+        # Stage 3: Optionally generate content for first topic
+        content = None
+        if payload.generate_content_for_first_topic:
+            topics = curriculum.get("topics", [])
+
+            if topics and isinstance(topics, list):
+                first_topic_obj = topics[0]
+
+                first_topic = None
+                if isinstance(first_topic_obj, dict):
+                    first_topic = first_topic_obj.get("topic")
+
+                if first_topic:
+                    content = stage3.generate(
+                        topic=first_topic,
+                        subject=payload.subject,
+                        class_level=payload.class_level,
+                        learning_style=stage1_result.learning_style,
+                        generated_curriculum=curriculum,
+                        student_id=payload.student_id,
+                        content_depth=payload.content_depth,
+                    )
+
+        return GenerateLearningResponse(
+            learning_style=stage1_result.learning_style,
+            curriculum=curriculum,
+            content=content,
+        )
+
+    except ValueError as exc:
         raise HTTPException(
-            status_code=500,
-            detail={"error": str(e), "trace": traceback.format_exc()},
-        )
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to run full learning pipeline",
+        ) from exc
